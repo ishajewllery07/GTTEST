@@ -2392,17 +2392,110 @@ body.focused-work-mode .mobile-dock-container {
       document.getElementById('forgotModal').style.display = 'none';
     }
 
-    function sendResetLink() {
-      const email = document.getElementById('resetEmail').value.trim();
+            async function sendResetLink() {
+      const email = (document.getElementById('resetEmail').value || '').trim().toLowerCase();
       if (!email) {
-        alert('Please enter your email address.');
+        alert('Kripya apna registered email address daalein.');
         return;
       }
-      closeForgotModal();
-      const errBox = document.getElementById('loginErrorMsg');
-      errBox.textContent = '✅ Password reset request sent for ' + email + '. Teacher se sampark karein.';
-      errBox.classList.remove('hidden');
+
+      const modalBtn = document.querySelector('#forgotModal .neu-submit-btn');
+      if (modalBtn) {
+        modalBtn.disabled = true;
+        modalBtn.textContent = 'Sending Request...';
+      }
+
+      try {
+        // 1. Firebase se sabhi student accounts fetch karke email match karein
+        let firebaseAccounts = {};
+        try {
+          const res = await fetchWithTimeout(FIREBASE_BASE_URL + '/student_accounts.json', {}, 6000);
+          const data = await res.json();
+          if (data && typeof data === 'object') {
+            firebaseAccounts = data;
+            localStorage.setItem('gtest_student_accounts_cache', JSON.stringify(data));
+          }
+        } catch (e) {
+          console.warn('Firebase fetch fallback to local cache:', e);
+        }
+
+        const allAccounts = getAllAvailableAccounts(firebaseAccounts);
+        let matchedAcc = null;
+        let matchedKey = null;
+
+        Object.entries(allAccounts).forEach(function(entry) {
+          const k = entry[0];
+          const acc = entry[1];
+          if (acc && acc.email && String(acc.email).trim().toLowerCase() === email) {
+            matchedAcc = acc;
+            matchedKey = k;
+          }
+        });
+
+        if (!matchedAcc) {
+          alert('❌ Yeh Email ("' + email + '") kisi bhi registered student account se juda nahi hai!');
+          return;
+        }
+
+        // 2. Firebase me Admin Approval Request save karein (Admin Panel ke liye)
+        const reqId = 'req_' + Date.now();
+        const requestPayload = {
+          id: reqId,
+          accountKey: matchedKey,
+          studentName: matchedAcc.name || matchedAcc.username,
+          username: matchedAcc.username,
+          studentEmail: email,
+          status: 'PENDING_ADMIN',
+          requestedAt: new Date().toISOString()
+        };
+
+        const fbSaveRes = await fetchWithTimeout(FIREBASE_BASE_URL + '/password_reset_requests/' + reqId + '.json', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestPayload)
+        }, 6000);
+
+        if (!fbSaveRes.ok) {
+          throw new Error('Firebase save failed: ' + fbSaveRes.status);
+        }
+
+        // 3. Admin ke Email par EmailJS se alert bhejein (Agar EmailJS fail bhi ho to Firebase request already save ho chuki hai)
+        try {
+          if (typeof emailjs !== 'undefined') {
+            await emailjs.send(
+              'service_nbu4zkh',
+              'template_7jn0hvf',
+              {
+                student_name: requestPayload.studentName,
+                username: requestPayload.username,
+                student_email: email
+              },
+              { publicKey: 'MQXpMrypHP9Dh_n5P' }
+            );
+          }
+        } catch (emailErr) {
+          console.warn('Admin EmailJS alert skipped/failed, but Firebase request saved:', emailErr);
+        }
+
+        document.getElementById('resetEmail').value = '';
+        closeForgotModal();
+
+        const errBox = document.getElementById('loginErrorMsg');
+        errBox.className = 'mb-3 p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold text-center';
+        errBox.textContent = '✅ Password reset request Admin Panel me bhej di gayi hai! Admin ke approve karte hi aapke email (' + email + ') par naya password aa jayega.';
+        errBox.classList.remove('hidden');
+      } catch (err) {
+        console.error('Reset Request Error:', err);
+        alert('⚠️ Error: ' + (err.message || 'Network samasya aayi, dobara try karein.'));
+      } finally {
+        if (modalBtn) {
+          modalBtn.disabled = false;
+          modalBtn.textContent = 'Send Link';
+        }
+      }
     }
+
+
 
     function togglePasswordVisibility(inputId, eyeId) {
       const inp = document.getElementById(inputId);
